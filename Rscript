@@ -1,6 +1,6 @@
 options(scipen=999)
 # Importazione del dataset ####
-setwd("C:/Users/adavi/OneDrive/Desktop/elaboratoDM")
+
 
 dati <- read.csv("listings_details.csv", sep=",", dec = ".",  
               stringsAsFactors=TRUE, na.strings=c("NA","NaN", "unknown", "Unknown", "", "N/A"))
