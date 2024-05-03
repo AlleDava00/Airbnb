@@ -1,0 +1,598 @@
+options(scipen=999)
+# Importazione del dataset ####
+setwd("C:/Users/adavi/OneDrive/Desktop/elaboratoDM")
+
+dati <- read.csv("listings_details.csv", sep=",", dec = ".",  
+              stringsAsFactors=TRUE, na.strings=c("NA","NaN", "unknown", "Unknown", "", "N/A"))
+b <- dati [, c (4, 23, 26:29, 32, 33, 35:37, 39:40, 49, 50, 52:60, 61, 64:69, 71:75, 77:86, 90, 92:96)]
+
+#Eliminazione di alcuni caratteri
+b$host_response_rate = as.numeric (gsub ("[\\%,]", "", b$host_response_rate))
+b$price = as.numeric (gsub ("[\\$,]", "", b$price))
+b$security_deposit = as.numeric (gsub ("[\\$,]", "", b$security_deposit))
+b$cleaning_fee = as.numeric (gsub ("[\\$,]", "", b$cleaning_fee))
+b$extra_people = as.numeric (gsub ("[\\$,]", "", b$extra_people))
+
+#Variabili date
+b$last_scraped = as.Date (b$last_scraped, format = "%Y-%m-%d")
+b$host_since = as.Date (b$host_since, format = "%Y-%m-%d")
+b$first_review = as.Date (b$first_review, format = "%Y-%m-%d")
+b$last_review = as.Date (b$last_review, format = "%Y-%m-%d") 
+
+#Quanti giorni da quando è host
+b$host_for_date <- b$last_scraped - b$host_since
+b$host_for_date = as.numeric (gsub ("[\\ days,]", "", b$host_for_date))
+
+#Quanti giorni dall'ultima review
+b$days_since_last_review <- b$last_scraped - b$last_review
+b$days_since_last_review = as.numeric (gsub ("[\\ days,]", "", b$days_since_last_review))
+
+#Quanti giorni dalla prima review
+b$days_since_first_review <- b$last_scraped - b$first_review
+b$days_since_first_review = as.numeric (gsub ("[\\ days,]", "", b$days_since_first_review))
+
+#Eliminazione variabili date
+b <- b [-c (1, 3, 39, 40)]
+
+#Numero di identificazioni e servizi
+library (stringr)
+b$host_verifications_num <- str_count (b$host_verifications, ',') + 1
+b$amenities_num <- str_count (b$amenities, ',') + 1
+b <- b [-c (4, 18)]
+
+# ANALISI DESCRITTIVE ####
+#variabile target
+library (psych)
+describe (b$price)
+quantile (b$price)
+plot (density (b$price, n = 200), par (lwd = 2), font = 2)
+axis (side = 1, at = 300, labels = 300, col = "red", col.axis = "red", font = 2)
+title (main = "Prezzo", xlab = "y", ylab = "Densità", font = 2)
+abline (v = 300, col = "red")
+
+quantile (b$price, probs = c (0.9, 0.99))
+#la variabile prezzo è molto asimettrica con coda a destra, il prezzo varia da zero euro a 8500 per notte,
+#mediana 125 euro, IL 90% DELLE CASE COSTA MENO DI 250 EURO E IL 95% COSTA MENO DI 300 EURO
+
+#Pie Chart with Percentages
+summary (b$room_type)
+slices <- c (15889, 4076, 65)
+lbls <- c ("Casa Intera", "Stanza Privata", "Stanza Condivisa")
+pct <- round (slices/sum (slices) * 100, digits = 2)
+lbls <- paste (lbls, pct) # add percents to labels
+lbls <- paste (lbls,"%",sep="") # ad % to labels
+pie (slices,labels = lbls, col = rainbow (length (lbls)),
+    main = "Tipo di Struttura")
+
+plot (density (b$number_of_reviews, n = 100), par (lwd = 2), font = 2)
+title (main = "Numero di Recensioni", xlab = "n", ylab = "Densità", font = 2)
+#numero di review
+
+hist (b$review_scores_value, breaks = c (1:10), main = "Voto Complessivo Recensioni", xlab = "Voto", ylab = "Frequenza Assoluta")
+axis (side = 1, at = c (1:10), labels = c (1:10))
+
+#mappa
+#install.packages ("tidyverse")
+#install.packages ("s2")
+#install.packages ("mapview")
+library (tidyverse)
+library (sf)
+library (mapview)
+mapview (b, xcol = "longitude", ycol = "latitude", crs = 4269, grid = FALSE)
+
+    # MISSING VALUES ####
+library (VIM)
+aggr (b, col = c ('navyblue', 'yellow'), numbers = TRUE, sortVars = TRUE, labels = names(b), prop = TRUE, combined = TRUE, cex.axis = .5, gap=2, oma = c (10, 5, 5, 3), cex.number = 0.2)
+
+#Eliminazione delle variabili con una percentuale di NA maggiore di 20
+library (dplyr)
+b %>% summarize_all (funs (sum (is.na (.)) / length (.))) #percentuali di valori mancanti
+b <- b [, which (colMeans (is.na (b)) < 0.2)]
+sapply (b, function(x)(sum (is.na (x)))) #contare i missing data
+aggr (b, col = c ('navyblue','yellow'), numbers=TRUE, sortVars=TRUE, labels = names(b), prop = TRUE, combined = TRUE, cex.axis = .5, gap = 2, oma = c (10, 5, 5, 3), cex.number = 0.5)
+
+#Problema Missing data
+  #in mancanza di review (number_of_review = 0), si hanno missing data sulle 8 variabili score e sulle date delle review -> MNAR
+  #il dataset b3 mantiene solo le variabili che hanno almeno una recensione -> drastica diminuzione di NA
+b2 <- b %>% filter (b$number_of_review == 0)
+b3 <- b %>% filter (b$number_of_review != 0)
+sapply (b3, function(x)(sum (is.na (x))))
+aggr (b3, col = c ('navyblue','yellow'), numbers=TRUE, sortVars=TRUE, labels = names(b3), prop = TRUE, combined = TRUE, cex.axis = .5, gap = 2, oma = c (10, 5, 5, 3), cex.number = 0.5)
+
+#imputazione
+library (mice)
+tempData <- mice (covariate, m = 3, maxit = 10, meth = 'cart', seed = 500) #presenza di collinearità -> matrice non invertibile
+compcov <- complete (tempData, 1)
+sapply (compcov, function (x) (sum (is.na (x))))
+aggr (compcov, col = c ('navyblue','yellow'), numbers = TRUE, sortVars = TRUE, labels = names (compcov), prop = TRUE, combined = TRUE, cex.axis = .5, gap = 2, oma = c (10, 5, 5, 3), cex.number = 0.5)
+
+#Divisione variabili fattoriali e quantitative
+numeric <- compcov %>% dplyr::select_if (is.numeric)
+colnames (numeric)
+fac <- compcov %>% dplyr::select_if (is.factor)
+colnames (fac)
+
+# PRIMA IPOTESI DI MODELLO ####
+comp <- cbind (compcov, b3$price)
+names (comp) [names (comp) == "b3$price"] <- "price"
+
+#comp: tutte le covariate e la terget
+#compcov: tutte le covariate
+
+Formula1 <- paste (colnames (comp), collapse="+")
+Formula1
+lm0 <- lm (price ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+           + latitude + longitude + property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + has_availability + availability_30 + availability_60 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification + calculated_host_listings_count
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num,
+           data = comp)
+#la variabile has_avaiability non ha varianza -> la si esclude dal modello
+
+cov = attr (terms (lm0), "term.labels")
+covariate <- b3 [, cov]
+
+lm0 <- lm (price ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+           + latitude + longitude + property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + availability_30 + availability_60 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification + calculated_host_listings_count
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num,
+           data = comp)
+
+summary (lm0) #adattamento del 21%
+
+#Diagnostiche
+par (mfrow=c (2,2))
+plot (lm0)        ## diagnostica
+par (mfrow=c(1,1))
+
+# COLLINEARITA' ####
+library ("knitr")
+library ("corrgram")
+library ("mctest")
+corrgram (compcov %>% dplyr::select_if (is.numeric), use = "complete.obs", lower.panel = panel.cor, cex=1, cex.labels = 1)
+
+#tutte le variabili del modello
+y = as.numeric (comp$price)
+X <- numeric
+X = as.matrix (X)
+
+m = lm (y~X)
+imcdiag (m)
+
+#eliminazione availability_60
+lm1 <- lm (price ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+           + latitude + longitude + property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + availability_30 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification + calculated_host_listings_count
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num,
+           data = comp)
+
+cov = attr (terms (lm1), "term.labels")
+numeric <- comp [,cov] %>% dplyr::select_if (is.numeric) #seleziona solo le numeriche 
+colnames (numeric)
+
+y = as.numeric (comp$price)
+X <- numeric
+X = as.matrix (X)
+
+m = lm (y~X)
+imcdiag (m)
+
+#eliminazione calculated_host_listings_count
+lm2 <- lm (price ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+           + latitude + longitude + property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + availability_30 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num,
+           data = comp)
+
+cov = attr (terms (lm2), "term.labels")
+numeric <- comp [, cov]%>% dplyr::select_if (is.numeric) #seleziona solo le numeriche 
+colnames (numeric)
+
+y = as.numeric (comp$price)
+X <- numeric
+X = as.matrix (X)
+
+m = lm (y~X)
+imcdiag (m)
+
+#variabili qualitative -> chi-quadro normalizzato
+b_fac <- comp [,cov]%>% dplyr::select_if (is.factor)
+summary (b_fac)
+
+library (plyr)
+combos <- combn (ncol (b_fac),2)
+adply(combos, 2, function(x) {
+  test <- chisq.test(b_fac[, x[1]], b_fac[, x[2]])
+  tab  <- table(b_fac[, x[1]], b_fac[, x[2]])
+  out <- data.frame("Row" = colnames(b_fac)[x[1]]
+                    , "Column" = colnames(b_fac[x[2]])
+                    , "Chi.Square" = round(test$statistic,3)
+                    , "df"= test$parameter
+                    , "p.value" = round(test$p.value, 3)
+                    , "n" = sum(table(b_fac[,x[1]], b_fac[,x[2]]))
+                    , "u1" =length(unique(b_fac[,x[1]]))-1
+                    , "u2" =length(unique(b_fac[,x[2]]))-1
+                    , "nMinu1u2" =sum(table(b_fac[,x[1]], b_fac[,x[2]]))* min(length(unique(b_fac[,x[1]]))-1 , length(unique(b_fac[,x[2]]))-1) 
+                    , "Chi.Square norm"  =test$statistic/(sum(table(b_fac[,x[1]], b_fac[,x[2]]))* min(length(unique(b_fac[,x[1]]))-1 , length(unique(b_fac[,x[2]]))-1)) 
+  )
+  return(out)
+}) #valori tutti minori di 0.9: vengono mantenute le covariate
+
+par (mfrow=c (2,2))
+plot (lm2)        ## diagnostica
+par (mfrow=c(1,1))
+
+#interazione tra variabili significative
+summary (lm2) #bedrooms - cleaning_fee
+
+fit <- lm (price ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+           + latitude + longitude + property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + availability_30 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num + bedrooms * cleaning_fee,
+           data = comp)
+summary (fit)
+
+
+# TRASFORMAZIONE DELLA VARIABILE TARGET: BOX-COX ####
+library (MASS)
+lm3 <- lm (price + 1 ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+           + latitude + longitude + property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + availability_30 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num + bedrooms * cleaning_fee,
+           data = comp)
+boxcoxreg1 <- boxcox (lm3)
+
+title ("Lambda")
+lambda = boxcoxreg1$x [which.max (boxcoxreg1$y)]
+lambda #prossimo allo 0 -> trasformazione logaritmica di prezzo
+
+lm4 <- lm (log (price + 1) ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+           + latitude + longitude + property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + availability_30 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num + bedrooms * cleaning_fee,
+           data = comp)
+
+par (mfrow = c (2,2)) 
+plot (lm4)
+par (mfrow = c (1,1))
+
+hist (comp$price)
+hist (log (comp$price))
+
+summary (lm3)
+summary (lm4) #aumento di R^2 da 0.21 a 0.57
+
+# GAM #### 
+library ("gam")
+library (mgcv)
+
+gam1 <- gam (log (price + 1) ~ 
+               host_is_superhost + s (host_listings_count) 
+             + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+             + s (latitude) + s (longitude) + property_type + room_type + s (accommodates) + s (bathrooms) 
+             + s (bedrooms) + s (beds) + bed_type + s (cleaning_fee) + s (guests_included) + s (extra_people)
+             + s (review_scores_accuracy)
+             + s (minimum_nights) + s (maximum_nights) + s (availability_30) + s (availability_90)
+             + s (availability_365) + s (number_of_reviews) + s (review_scores_rating) 
+             + instant_bookable + cancellation_policy + require_guest_profile_picture 
+             + require_guest_phone_verification + s (reviews_per_month) + s (host_for_date) 
+             + s (days_since_last_review) + s (days_since_first_review) + s (host_verifications_num) 
+             + s (amenities_num) + s (bedrooms * cleaning_fee),
+             data = comp)
+
+gam1 <- gam (log (price + 1) ~ 
+               host_is_superhost + s (host_listings_count) 
+             + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+             + s (latitude) + s (longitude) + property_type + room_type + s (accommodates) + s (bathrooms) 
+             + s (bedrooms) + s (beds) + bed_type + s (cleaning_fee) + s (guests_included) + s (extra_people) 
+             + s (minimum_nights) + s (maximum_nights) + s (availability_30) + s (availability_90)
+             + s (availability_365) + s (number_of_reviews) + s (review_scores_rating) 
+             + s (review_scores_accuracy, k = 5)
+             + s (review_scores_cleanliness, k = 8)
+             + s (review_scores_checkin, k = 5)
+             + s (review_scores_communication, k = 6)
+             + s (review_scores_location, k = 6)
+             + s (review_scores_value, k = 3)
+             + instant_bookable + cancellation_policy + require_guest_profile_picture 
+             + require_guest_phone_verification + s (reviews_per_month) + s (host_for_date) 
+             + s (days_since_last_review) + s (days_since_first_review) + s (host_verifications_num) 
+             + s (amenities_num) + s (bedrooms * cleaning_fee),
+             data = comp)
+
+gam1 <- gam (log (price + 1) ~ 
+               host_is_superhost + s (host_listings_count) 
+             + host_has_profile_pic + host_identity_verified + neighbourhood + neighbourhood_cleansed 
+             + s (latitude) + s (longitude) + property_type + room_type + s (accommodates) + s (bathrooms) 
+             + s (bedrooms) + s (beds) + bed_type + s (cleaning_fee) + s (guests_included) + s (extra_people) 
+             + s (minimum_nights) + s (maximum_nights) + s (availability_30) + s (availability_90)
+             + s (availability_365) + s (number_of_reviews) + s (review_scores_rating) 
+             + s (review_scores_accuracy, k = 8)
+             + s (review_scores_cleanliness, k = 7)
+             + s (review_scores_checkin, k = 7)
+             + s (review_scores_communication, k = 8)
+             + s (review_scores_location, k = 8)
+             + s (review_scores_value, k = 7)
+             + instant_bookable + cancellation_policy + require_guest_profile_picture 
+             + require_guest_phone_verification + s (reviews_per_month) + s (host_for_date) 
+             + s (days_since_last_review) + s (days_since_first_review) + s (host_verifications_num) 
+             + s (amenities_num) + s (bedrooms * cleaning_fee),
+             data = comp)
+
+gam1 <- gam (log (price + 1) ~ 
+             s (review_scores_accuracy, k = 3),
+             data = comp)
+
+anova (lm4, gam1, test = "LRT")
+plot (gam1)
+
+table (comp$review_scores_accuracy)
+table (comp$review_scores_cleanliness)
+table (comp$review_scores_checkin)
+table (comp$review_scores_communication)
+table (comp$review_scores_location)
+table (comp$review_scores_value)
+table (comp$review_scores_rating)
+
+summary (gam1)
+anova (lm4, gam1, test="LRT")
+plot (gam1)
+
+# OPTIMAL GROUPING ####
+devtools::install_github ("MI2DataLab/factorMerger", build_vignettes = FALSE, force = TRUE)
+library (factorMerger)
+library (dplyr) 
+
+sapply (fac, function(x)(nlevels (x)))
+
+#neighbourhood - n
+reduce_levels_n <- mergeFactors (response = comp$price, factor = comp$neighbourhood)
+og_n = cutTree (reduce_levels_n)
+length (og_n)
+class (og_n)
+table (og_n)
+
+comp$og_neighbourhood = as.numeric (og_n)
+head (comp)
+comp$og_neighbourhood = as.factor (comp$og_neighbourhood)
+table (og_n, comp$og_neighbourhood)
+
+plot (comp$og_neighbourhood, comp$neighbourhood)
+
+a_n = lm (price ~ neighbourhood, comp)
+b_n = lm (price ~ og_neighbourhood, comp)
+summary (a_n)
+summary (b_n) #miglioramento di meno di due punti percentuale di R^2
+
+nlevels (comp$neighbourhood)
+nlevels (comp$og_neighbourhood) #da 44 a 10 livelli per la variabile neighbourhood
+
+#neighbourhood_cleansed - nc
+reduce_levels_nc <- mergeFactors (response = comp$price, factor = comp$neighbourhood_cleansed)
+og_nc = cutTree (reduce_levels_nc)
+length (og_nc)
+class (og_nc)
+table (og_nc)
+
+comp$og_neighbourhood_cleansed = as.numeric (og_nc)
+head (comp)
+comp$og_neighbourhood_cleansed = as.factor (comp$og_neighbourhood_cleansed)
+table (og_nc, comp$og_neighbourhood_cleansed)
+
+plot (comp$og_neighbourhood_cleansed, comp$neighbourhood_cleansed)
+
+a_nc = lm (price ~ neighbourhood_cleansed, comp)
+b_nc = lm (price ~ og_neighbourhood_cleansed, comp)
+summary (a_nc)
+summary (b_nc) #miglioramento di meno di un punto percentuale di R^2
+
+nlevels (comp$neighbourhood_cleansed)
+nlevels (comp$og_neighbourhood_cleansed) #da 22 a 8 livelli per la variabile neighbourhood_cleansed
+
+#property_type - pt
+reduce_levels_pt <- mergeFactors (response = comp$price, factor = comp$property_type)
+og_pt = cutTree (reduce_levels_pt)
+length (og_pt)
+class (og_pt)
+table (og_pt)
+
+comp$og_property_type = as.numeric (og_pt)
+head (comp)
+comp$og_property_type = as.factor (comp$og_property_type)
+table (og_pt, comp$og_property_type)
+
+plot (comp$og_property_type, comp$property_type)
+
+a_pt = lm (price ~ property_type, comp)
+b_pt = lm (price ~ og_property_type, comp)
+summary (a_pt)
+summary (b_pt) #miglioramento di un punto percentuale di R^2
+
+nlevels (comp$property_type)
+nlevels (comp$og_property_type) #da 31 a 7 livelli per la variabile property_type
+
+# MODEL SELESCTION ####
+lm5 <- lm (log (price + 1) ~ 
+             host_is_superhost + host_listings_count 
+           + host_has_profile_pic + host_identity_verified + og_neighbourhood + og_neighbourhood_cleansed 
+           + latitude + longitude + og_property_type + room_type + accommodates + bathrooms + bedrooms + beds
+           + bed_type + cleaning_fee + guests_included + extra_people + minimum_nights
+           + maximum_nights + availability_30 + availability_90
+           + availability_365 + number_of_reviews + review_scores_rating + review_scores_accuracy
+           + review_scores_cleanliness + review_scores_checkin + review_scores_communication
+           + review_scores_location + review_scores_value + instant_bookable + cancellation_policy
+           + require_guest_profile_picture + require_guest_phone_verification
+           + reviews_per_month + host_for_date + days_since_last_review + days_since_first_review
+           + host_verifications_num + amenities_num,
+           data = comp)
+
+library (MASS)
+residual = data.frame (lm5$residuals)
+step <- stepAIC (lm5, direction = "both")
+
+lm6 <- lm (log (price + 1) ~ host_is_superhost + host_listings_count
+           + og_neighbourhood + og_neighbourhood_cleansed + latitude
+           + longitude + og_property_type + room_type + accommodates
+           + bathrooms + bedrooms + beds + bed_type + cleaning_fee + guests_included
+           + extra_people + minimum_nights + maximum_nights + availability_30
+           + availability_90 + availability_365 + number_of_reviews
+           + review_scores_rating + review_scores_cleanliness + review_scores_checkin
+           + review_scores_location + review_scores_value + instant_bookable
+           + cancellation_policy + require_guest_profile_picture + require_guest_phone_verification
+           + reviews_per_month + host_for_date + days_since_last_review
+           + days_since_first_review + host_verifications_num + amenities_num,
+           data = comp)
+drop1 (lm6, .~., test="F") #le variabili require_guest_profile_picture e require_guest_phone_verification non risultano significative
+
+lm7 <- lm (log (price + 1) ~ host_is_superhost + host_listings_count
+           + og_neighbourhood + og_neighbourhood_cleansed + latitude
+           + longitude + og_property_type + room_type + accommodates
+           + bathrooms + bedrooms + beds + bed_type + cleaning_fee + guests_included
+           + extra_people + minimum_nights + maximum_nights + availability_30
+           + availability_90 + availability_365 + number_of_reviews
+           + review_scores_rating + review_scores_cleanliness + review_scores_checkin
+           + review_scores_location + review_scores_value + instant_bookable
+           + cancellation_policy
+           + reviews_per_month + host_for_date + days_since_last_review
+           + days_since_first_review + host_verifications_num + amenities_num,
+           data = comp)
+drop1 (lm7, .~., test="F")
+
+#confronto R^2
+summary (lm5)$adj.r.squared
+summary (lm6)$adj.r.squared
+summary (lm7)$adj.r.squared
+
+par (mfrow=c(2,2)) 
+plot (lm7)
+par (mfrow=c(1,1))
+
+# PUNTI INFLUENTI ####
+library (car)
+influencePlot (lm7, main = "Influence Plot", sub = "Circle size is proportional to Cook's Distance")
+
+stzed <- rstudent (lm7)
+lever <- hat (model.matrix (lm7))
+dffits1 <- dffits (lm7)
+cooksd <- cooks.distance (lm7)
+
+cooksd <- data.frame (cooks.distance (lm7))
+cutoff <- 4 / ((nrow (comp) - length (lm7$coefficients) - 2))
+cutoff
+
+influential <- comp [cooksd >= cutoff, ]
+influential
+
+filtered <- comp [cooksd < cutoff, ]
+filtered <- na.omit (filtered)
+
+lm8 <- lm (log (price + 1) ~ host_is_superhost + host_listings_count
+           + og_neighbourhood + og_neighbourhood_cleansed + latitude
+           + longitude + og_property_type + room_type + accommodates
+           + bathrooms + bedrooms + beds + bed_type + cleaning_fee + guests_included
+           + extra_people + minimum_nights + maximum_nights + availability_30
+           + availability_90 + availability_365 + number_of_reviews
+           + review_scores_rating + review_scores_cleanliness + review_scores_checkin
+           + review_scores_location + review_scores_value + instant_bookable
+           + cancellation_policy
+           + reviews_per_month + host_for_date + days_since_last_review
+           + days_since_first_review + host_verifications_num + amenities_num,
+           data = filtered)
+summary (lm7)$adj.r.squared
+summary (lm8)$adj.r.squared #aumento del 9% di R^2
+
+par (mfrow = c(2, 2))
+influencePlot (lm7, main = "Influence Plot", sub = "Circle size is proportional to Cook's Distance")
+influencePlot (lm8, main = "Influence Plot", sub = "Circle size is proportional to Cook's Distance")
+plot (lm7, which = 4, cook.levels = cutoff)
+plot (lm8, which = 4, cook.levels = cutoff)
+par (mfrow = c(1, 1))
+
+#ETEROSCHEDASTICITA' ####
+library(lmtest) 
+bptest (lm8) #rifiuto H0 -> forte eteroschedasticità
+ncvTest (lm8) #conferma di presenza di eteroschedasticità
+
+#correggere gli standard error
+library (sandwich)
+coeftest (lm8, vcov = vcovHC (lm8)) 
+
+#mle
+summary (lm8)$coefficients [, 4]
+
+#white standard error
+cf = as.matrix (coeftest (lm8, vcov = vcovHC (lm8)))
+cf
+
+#confronto p-values
+plot (cf [,4], summary (lm8)$coefficients [, 4] , asp = 1)
+abline(a = 0, b = 1, col = 2)
+
+# VERIFICHE FINALI SULLA ROBUSTEZZA DEL MODELLO - BOOTSTRAP ####
+library (car)
+BOOT.MOD = Boot (lm8, R = 1999)
+summary (BOOT.MOD, high.moments = TRUE)
+Confint (BOOT.MOD, level = c (.95), type = "perc")
+Confint (BOOT.MOD, level = c (.95), type = "norm")
+par (mfrow = c (3,3))
+hist (BOOT.MOD, legend = "separate")
+par (mfrow = c (1,1))
+
+par (mfrow = c (3,3))
+plot (lm0)
+plot (lm8)        ## diagnostica
+par (mfrow = c(1,1))
